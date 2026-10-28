@@ -1,0 +1,20 @@
+{{define "interface" -}}
+[Interface]
+PrivateKey = {{.PrivateKey.Base64}}
+{{if .ListenPort -}}
+ListenPort = {{.ListenPort}}
+{{end -}}
+Address = {{joinPrefixes .Address ", "}}
+{{if .MTU -}}
+MTU = {{.MTU}}
+{{end -}}
+{{if or .DNS .DNSSearch -}}
+DNS = {{joinAddrs .DNS ", "}}{{if and .DNS .DNSSearch}}, {{end}}{{joinNames .DNSSearch ", "}}
+{{end -}}
+{{range .PostUp -}}
+PostUp = {{.}}
+{{end -}}
+{{range .PostDown -}}
+PostDown = {{.}}
+{{end -}}
+{{end -}}

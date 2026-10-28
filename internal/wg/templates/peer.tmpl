@@ -1,0 +1,12 @@
+{{define "peer" -}}
+[Peer]
+PublicKey = {{.PublicKey}}
+PresharedKey = {{.PresharedKey.Base64}}
+AllowedIPs = {{joinPrefixes .AllowedIPs ", "}}
+{{if not .Endpoint.IsZero -}}
+Endpoint = {{.Endpoint}}
+{{end -}}
+{{if .PersistentKeepalive -}}
+PersistentKeepalive = {{.PersistentKeepalive}}
+{{end -}}
+{{end -}}
