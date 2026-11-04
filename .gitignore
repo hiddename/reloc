@@ -1,3 +1,5 @@
 .idea/
+/reloc
+.envrc
 *.conf
-!internal/wg/testdata/*.conf
+!internal/*/testdata/*.conf
