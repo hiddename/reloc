@@ -2,6 +2,8 @@ package wg
 
 import (
 	"net/netip"
+
+	"github.com/uhiddename/reloc/internal/inet"
 )
 
 type Interface struct {
@@ -10,7 +12,7 @@ type Interface struct {
 	Address    []netip.Prefix
 	MTU        uint16
 	DNS        []netip.Addr
-	DNSSearch  []DNSName
+	DNSSearch  []inet.DNSName
 	PostUp     []string
 	PostDown   []string
 }

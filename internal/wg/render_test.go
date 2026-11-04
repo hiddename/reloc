@@ -7,20 +7,22 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/uhiddename/reloc/internal/inet"
 )
 
 var update = flag.Bool("update", false, "update golden files in testdata")
 
 func TestRender(t *testing.T) {
-	name, err := ParseDNSName("vpn.example.com")
+	name, err := inet.ParseDNSName("vpn.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lan, err := ParseDNSName("lan")
+	lan, err := inet.ParseDNSName("lan")
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := EndpointFromName(name, 51820)
+	endpoint, err := inet.EndpointFromName(name, 51820)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +78,7 @@ func TestRender(t *testing.T) {
 					},
 					MTU:       1420,
 					DNS:       []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("2606:4700:4700::1111")},
-					DNSSearch: []DNSName{lan},
+					DNSSearch: []inet.DNSName{lan},
 				},
 				Peers: []Peer{
 					{

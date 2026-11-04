@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"strings"
 	"text/template"
+
+	"github.com/uhiddename/reloc/internal/inet"
 )
 
 //go:embed templates/*.tmpl
@@ -17,7 +19,7 @@ var tmpl = template.Must(
 		Funcs(template.FuncMap{
 			"joinPrefixes": joinStringers[netip.Prefix],
 			"joinAddrs":    joinStringers[netip.Addr],
-			"joinNames":    joinStringers[DNSName],
+			"joinNames":    joinStringers[inet.DNSName],
 		}).
 		ParseFS(templatesFS, "templates/*.tmpl"),
 )

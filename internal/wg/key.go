@@ -34,16 +34,21 @@ func keyToBase64[K Key](k K) string {
 	return base64.StdEncoding.EncodeToString(k[:])
 }
 
+func KeyFromBytes[K Key](bs []byte) (K, error) {
+	var zero K
+	if len(bs) != keySize {
+		return zero, fmt.Errorf("%w: got %d bytes, want %d", ErrInvalidKeySize, len(bs), keySize)
+	}
+	return K(bs), nil
+}
+
 func ParseKey[K Key](s string) (K, error) {
 	var zero K
 	bs, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return zero, fmt.Errorf("%w: %w", ErrInvalidBase64, err)
 	}
-	if len(bs) != keySize {
-		return zero, fmt.Errorf("%w: got %d bytes, want %d", ErrInvalidKeySize, len(bs), keySize)
-	}
-	return K(bs), nil
+	return KeyFromBytes[K](bs)
 }
 
 func MustParseKey[K Key](s string) K {
@@ -77,6 +82,10 @@ func (k PrivateKey) Base64() string {
 	return keyToBase64(k)
 }
 
+func (k PrivateKey) Bytes() []byte {
+	return k[:]
+}
+
 func (k PrivateKey) String() string {
 	return "[redacted]"
 }
@@ -89,8 +98,16 @@ func (k PresharedKey) Base64() string {
 	return keyToBase64(k)
 }
 
+func (k PresharedKey) Bytes() []byte {
+	return k[:]
+}
+
 func (k PresharedKey) String() string {
 	return "[redacted]"
+}
+
+func (k PublicKey) Bytes() []byte {
+	return k[:]
 }
 
 func (k PublicKey) String() string {

@@ -1,4 +1,4 @@
-package wg
+package inet
 
 import (
 	"errors"
@@ -8,12 +8,24 @@ import (
 	"strconv"
 )
 
-var ErrInvalidEndpoint = errors.New("wg: invalid endpoint")
+var ErrInvalidEndpoint = errors.New("inet: invalid endpoint")
 
 type Endpoint struct {
 	addr netip.Addr
 	name DNSName
 	port uint16
+}
+
+func (e Endpoint) Addr() netip.Addr {
+	return e.addr
+}
+
+func (e Endpoint) Name() DNSName {
+	return e.name
+}
+
+func (e Endpoint) Port() uint16 {
+	return e.port
 }
 
 func validateEndpointPort(port uint16) error {
@@ -61,6 +73,29 @@ func EndpointFromName(n DNSName, port uint16) (Endpoint, error) {
 		name: n,
 		port: port,
 	}, nil
+}
+
+func EndpointFromHost(host string, port uint16) (Endpoint, error) {
+	if a, err := netip.ParseAddr(host); err == nil {
+		return EndpointFromAddr(a, port)
+	}
+	n, err := ParseDNSName(host)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("inet: endpoint host %q: not an IP address or DNS name", host)
+	}
+	return EndpointFromName(n, port)
+}
+
+func ParseEndpoint(s string) (Endpoint, error) {
+	hostStr, portStr, err := net.SplitHostPort(s)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("inet: parse endpoint %q: %w", s, err)
+	}
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("inet: parse endpoint %q: invalid port", s)
+	}
+	return EndpointFromHost(hostStr, uint16(port))
 }
 
 func (e Endpoint) host() string {

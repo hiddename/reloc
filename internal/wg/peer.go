@@ -2,6 +2,8 @@ package wg
 
 import (
 	"net/netip"
+
+	"github.com/uhiddename/reloc/internal/inet"
 )
 
 const (
@@ -17,7 +19,7 @@ type Peer struct {
 	PublicKey           PublicKey
 	PresharedKey        PresharedKey
 	AllowedIPs          []netip.Prefix
-	Endpoint            Endpoint
+	Endpoint            inet.Endpoint
 	PersistentKeepalive uint16
 }
 

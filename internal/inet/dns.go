@@ -1,4 +1,4 @@
-package wg
+package inet
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ const (
 	maxDNSLabelLength = 63
 )
 
-var ErrInvalidDNSName = errors.New("wg: invalid dns name")
+var ErrInvalidDNSName = errors.New("inet: invalid dns name")
 
 type DNSName struct {
 	s string
