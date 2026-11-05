@@ -426,7 +426,11 @@ func clientRemove(ctx context.Context, st *store.Store, args []string) error {
 		flags.Usage()
 		return usagef("client remove: -server-id (positive) and -name are required")
 	}
-	if err := st.DeleteClient(ctx, *serverID, *name); err != nil {
+	client, err := st.GetClientByName(ctx, *serverID, *name)
+	if err != nil {
+		return err
+	}
+	if err := st.DeleteClient(ctx, client.ID); err != nil {
 		return err
 	}
 	if !*apply {
@@ -456,7 +460,11 @@ func setClientEnabled(ctx context.Context, st *store.Store, args []string, enabl
 		flags.Usage()
 		return usagef("%s: -server-id (positive) and -name are required", cmd)
 	}
-	if err := st.SetClientEnabled(ctx, *serverID, *name, enabled); err != nil {
+	client, err := st.GetClientByName(ctx, *serverID, *name)
+	if err != nil {
+		return err
+	}
+	if err := st.SetClientEnabled(ctx, client.ID, enabled); err != nil {
 		return err
 	}
 	if !*apply {

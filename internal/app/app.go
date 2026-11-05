@@ -40,6 +40,12 @@ func (a *App) CreateClient(ctx context.Context, serverID int64, name string, tun
 }
 
 func (a *App) createClient(ctx context.Context, serverID int64, name string, tunnel []netip.Prefix) (vpn.Client, error) {
+	if err := vpn.ValidateClientName(name); err != nil {
+		return vpn.Client{}, err
+	}
+	if err := vpn.ValidateTunnelNetworks(tunnel); err != nil {
+		return vpn.Client{}, err
+	}
 	var (
 		c   vpn.Client
 		err error
@@ -100,6 +106,100 @@ func (a *App) tryCreateClient(ctx context.Context, serverID int64, name string, 
 		},
 	}
 	return a.store.CreateClient(ctx, newClient)
+}
+
+func (a *App) ListClients(ctx context.Context, serverID int64) ([]vpn.Client, error) {
+	if _, err := a.store.GetServer(ctx, serverID); err != nil {
+		return nil, fmt.Errorf("app: list clients: %w", err)
+	}
+	clients, err := a.store.ListClients(ctx, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("app: list clients: %w", err)
+	}
+	return clients, nil
+}
+
+func (a *App) DeleteClient(ctx context.Context, clientID int64) error {
+	if err := a.deleteClient(ctx, clientID); err != nil {
+		return fmt.Errorf("app: delete client: %w", err)
+	}
+	return nil
+}
+
+func (a *App) deleteClient(ctx context.Context, clientID int64) error {
+	return a.store.DeleteClient(ctx, clientID)
+}
+
+func (a *App) SetClientEnabled(ctx context.Context, clientID int64, enabled bool) error {
+	if err := a.setClientEnabled(ctx, clientID, enabled); err != nil {
+		return fmt.Errorf("app: set client enabled: %w", err)
+	}
+	return nil
+}
+
+func (a *App) setClientEnabled(ctx context.Context, clientID int64, enabled bool) error {
+	return a.store.SetClientEnabled(ctx, clientID, enabled)
+}
+
+func (a *App) GetClientByName(ctx context.Context, serverID int64, name string) (vpn.Client, error) {
+	c, err := a.getClientByName(ctx, serverID, name)
+	if err != nil {
+		return vpn.Client{}, fmt.Errorf("app: get client by name: %w", err)
+	}
+	return c, nil
+}
+
+func (a *App) getClientByName(ctx context.Context, serverID int64, name string) (vpn.Client, error) {
+	return a.store.GetClientByName(ctx, serverID, name)
+}
+
+func (a *App) GetClient(ctx context.Context, id int64) (vpn.Client, error) {
+	c, err := a.getClient(ctx, id)
+	if err != nil {
+		return vpn.Client{}, fmt.Errorf("app: get client: %w", err)
+	}
+	return c, nil
+}
+
+func (a *App) getClient(ctx context.Context, id int64) (vpn.Client, error) {
+	return a.store.GetClient(ctx, id)
+}
+
+func (a *App) GetServer(ctx context.Context, id int64) (vpn.Server, error) {
+	c, err := a.getServer(ctx, id)
+	if err != nil {
+		return vpn.Server{}, fmt.Errorf("app: get server: %w", err)
+	}
+	return c, nil
+}
+
+func (a *App) getServer(ctx context.Context, id int64) (vpn.Server, error) {
+	return a.store.GetServer(ctx, id)
+}
+
+func (a *App) ClientConf(ctx context.Context, id int64) (wg.Config, error) {
+	conf, err := a.clientConf(ctx, id)
+	if err != nil {
+		return wg.Config{}, fmt.Errorf("app: client conf: %w", err)
+	}
+	return conf, nil
+}
+
+func (a *App) clientConf(ctx context.Context, id int64) (wg.Config, error) {
+	var zero wg.Config
+	client, err := a.getClient(ctx, id)
+	if err != nil {
+		return zero, err
+	}
+	serv, err := a.getServer(ctx, client.ServerID)
+	if err != nil {
+		return zero, err
+	}
+	conf, err := ClientConfig(serv, client)
+	if err != nil {
+		return zero, err
+	}
+	return conf, nil
 }
 
 type ApplyAction int

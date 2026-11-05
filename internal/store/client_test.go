@@ -298,7 +298,7 @@ func TestDeleteClient(t *testing.T) {
 	createTestClient(t, s, newTestClient(srv.ID, "kept", "10.66.66.3"))
 	createTestClient(t, s, newTestClient(other.ID, "gone", "10.66.66.2"))
 
-	if err := s.DeleteClient(ctx, srv.ID, "gone"); err != nil {
+	if err := s.DeleteClient(ctx, removed.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -322,7 +322,7 @@ func TestSetClientEnabled(t *testing.T) {
 	ctx := context.Background()
 	srv := testServer(t, s, false)
 	other := testServer(t, s, false)
-	createTestClient(t, s, newTestClient(srv.ID, "a", "10.66.66.2"))
+	a := createTestClient(t, s, newTestClient(srv.ID, "a", "10.66.66.2"))
 	createTestClient(t, s, newTestClient(srv.ID, "b", "10.66.66.3"))
 	createTestClient(t, s, newTestClient(other.ID, "a", "10.66.66.2"))
 
@@ -340,7 +340,7 @@ func TestSetClientEnabled(t *testing.T) {
 	}
 
 	for _, want := range []bool{false, false, true, true} { // repeating is not an error
-		if err := s.SetClientEnabled(ctx, srv.ID, "a", want); err != nil {
+		if err := s.SetClientEnabled(ctx, a.ID, want); err != nil {
 			t.Fatal(err)
 		}
 		got := enabled(srv.ID)
@@ -363,22 +363,80 @@ func TestClientNotFound(t *testing.T) {
 	other := testServer(t, s, false)
 	createTestClient(t, s, newTestClient(other.ID, "elsewhere", "10.66.66.2"))
 
-	for name, call := range map[string]func(serverID int64, name string) error{
-		"DeleteClient":     func(id int64, n string) error { return s.DeleteClient(ctx, id, n) },
-		"SetClientEnabled": func(id int64, n string) error { return s.SetClientEnabled(ctx, id, n, false) },
+	const missingID = -1
+	for name, call := range map[string]func() error{
+		"DeleteClient":     func() error { return s.DeleteClient(ctx, missingID) },
+		"SetClientEnabled": func() error { return s.SetClientEnabled(ctx, missingID, false) },
+		"GetClient": func() error {
+			_, err := s.GetClient(ctx, missingID)
+			return err
+		},
+		"GetClientByName unknown name": func() error {
+			_, err := s.GetClientByName(ctx, srv.ID, "no-such-client")
+			return err
+		},
+		"GetClientByName another server": func() error {
+			_, err := s.GetClientByName(ctx, srv.ID, "elsewhere")
+			return err
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := call(srv.ID, "no-such-client"); !errors.Is(err, ErrNotFound) {
-				t.Errorf("unknown name: err = %v, want ErrNotFound", err)
-			}
-			if err := call(srv.ID, "elsewhere"); !errors.Is(err, ErrNotFound) {
-				t.Errorf("client of another server: err = %v, want ErrNotFound", err)
+			if err := call(); !errors.Is(err, ErrNotFound) {
+				t.Errorf("err = %v, want ErrNotFound", err)
 			}
 		})
 	}
 	if got := clientNames(t, s, other.ID); !slices.Equal(got, []string{"elsewhere"}) {
 		t.Errorf("client of another server was touched: %q", got)
 	}
+}
+
+// wantSameClient compares the fields that come back from the database.
+func wantSameClient(t *testing.T, got, want vpn.Client) {
+	t.Helper()
+	if got.ID != want.ID || got.ServerID != want.ServerID || got.Name != want.Name ||
+		got.IPv4 != want.IPv4 || got.IPv6 != want.IPv6 || got.Enabled != want.Enabled ||
+		!slices.Equal(got.TunnelNetworks, want.TunnelNetworks) ||
+		!got.CreatedAt.Equal(want.CreatedAt) {
+		t.Errorf("client = %+v, want %+v", got, want)
+	}
+	gotWG, ok := got.Protocol.(vpn.WireGuardClient)
+	if !ok {
+		t.Fatalf("protocol = %T, want WireGuardClient", got.Protocol)
+	}
+	wantWG := want.Protocol.(vpn.WireGuardClient)
+	if !slices.Equal(gotWG.PrivateKey.Bytes(), wantWG.PrivateKey.Bytes()) ||
+		!slices.Equal(gotWG.PresharedKey.Bytes(), wantWG.PresharedKey.Bytes()) ||
+		gotWG.PersistentKeepalive != wantWG.PersistentKeepalive {
+		t.Error("WireGuard fields do not match")
+	}
+}
+
+func TestGetClient(t *testing.T) {
+	s := testStore(t)
+	srv := testServer(t, s, true)
+	createTestClient(t, s, newTestClient(srv.ID, "first", "10.66.66.2", "fd42::2"))
+	want := createTestClient(t, s, newTestClient(srv.ID, "second", "10.66.66.3", "fd42::3"))
+
+	got, err := s.GetClient(context.Background(), want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSameClient(t, got, want)
+}
+
+func TestGetClientByName(t *testing.T) {
+	s := testStore(t)
+	srv := testServer(t, s, false)
+	other := testServer(t, s, false)
+	createTestClient(t, s, newTestClient(other.ID, "phone", "10.66.66.2"))
+	want := createTestClient(t, s, newTestClient(srv.ID, "phone", "10.66.66.2"))
+
+	got, err := s.GetClientByName(context.Background(), srv.ID, "phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSameClient(t, got, want)
 }
 
 func TestCreateClientConflict(t *testing.T) {
