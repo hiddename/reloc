@@ -100,7 +100,7 @@ func TestApplyServerNoAuth(t *testing.T) {
 // a read before the lock would return "not found" instead of waiting.
 func TestApplyServerReadsAfterLock(t *testing.T) {
 	e := newTestEnv(t)
-	a := NewAuth(e.app.store, ssh.Password("unused"))
+	a := e.app.WithAuth(ssh.Password("unused"))
 	const missingServer = 1 << 62
 
 	unlock := takeLock(t, &a.applyLocks, missingServer)

@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
-	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -94,34 +93,34 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	defer pool.Close()
-	st := store.New(pool)
-	a := app.New(st)
+
+	a := app.New(store.New(pool))
 
 	switch cmd := strings.Join(args[:min(2, len(args))], " "); cmd {
 	case "migrate":
 		return migrate(ctx, pool)
 	case "host add":
-		return hostAdd(ctx, st, args[2:])
+		return hostAdd(ctx, a, args[2:])
 	case "host check":
-		return hostCheck(ctx, st, args[2:])
+		return hostCheck(ctx, a, args[2:])
 	case "server add":
-		return serverAdd(ctx, st, args[2:])
+		return serverAdd(ctx, a, args[2:])
 	case "server conf":
-		return serverConf(ctx, st, args[2:])
+		return serverConf(ctx, a, args[2:])
 	case "server apply":
-		return serverApply(ctx, st, args[2:])
+		return serverApply(ctx, a, args[2:])
 	case "client list":
-		return clientList(ctx, st, args[2:])
+		return clientList(ctx, a, args[2:])
 	case "client add":
-		return clientAdd(ctx, st, a, args[2:])
+		return clientAdd(ctx, a, args[2:])
 	case "client remove":
-		return clientRemove(ctx, st, args[2:])
+		return clientRemove(ctx, a, args[2:])
 	case "client disable":
-		return setClientEnabled(ctx, st, args[2:], false)
+		return setClientEnabled(ctx, a, args[2:], false)
 	case "client enable":
-		return setClientEnabled(ctx, st, args[2:], true)
+		return setClientEnabled(ctx, a, args[2:], true)
 	case "client conf":
-		return clientConf(ctx, st, args[2:])
+		return clientConf(ctx, a, args[2:])
 	default:
 		return usagef("unknown command %q, run \"reloc\" for the list", cmd)
 	}
@@ -135,7 +134,7 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return store.Migrate(ctx, pool, dir)
 }
 
-func hostAdd(ctx context.Context, st *store.Store, args []string) error {
+func hostAdd(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("host add", flag.ContinueOnError)
 	name := flags.String("name", "", "host name")
 	sshAddr := flags.String("ssh", "", "user@host:port")
@@ -167,7 +166,7 @@ func hostAdd(ctx context.Context, st *store.Store, args []string) error {
 			HostKey: k,
 		},
 	}
-	host, err = st.CreateHost(ctx, host)
+	host, err = a.CreateHost(ctx, host)
 	if err != nil {
 		return err
 	}
@@ -175,7 +174,7 @@ func hostAdd(ctx context.Context, st *store.Store, args []string) error {
 	return nil
 }
 
-func hostCheck(ctx context.Context, st *store.Store, args []string) error {
+func hostCheck(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("host check", flag.ContinueOnError)
 	hostName := flags.String("name", "", "host name, see host add")
 	if err := parseFlags(flags, args); err != nil {
@@ -186,7 +185,7 @@ func hostCheck(ctx context.Context, st *store.Store, args []string) error {
 		return usagef("host check: -name is required")
 	}
 
-	h, err := st.GetHostByName(ctx, *hostName)
+	h, err := a.GetHostByName(ctx, *hostName)
 	if err != nil {
 		return err
 	}
@@ -210,7 +209,7 @@ func hostCheck(ctx context.Context, st *store.Store, args []string) error {
 	return nil
 }
 
-func serverAdd(ctx context.Context, st *store.Store, args []string) error {
+func serverAdd(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("server add", flag.ContinueOnError)
 	hostName := flags.String("host", "", "host name, see host add")
 	endpointStr := flags.String("endpoint", "", "public address or DNS name clients connect to")
@@ -260,7 +259,7 @@ func serverAdd(ctx context.Context, st *store.Store, args []string) error {
 	if err != nil {
 		return usagef("server add: -dns-search: %w", err)
 	}
-	host, err := st.GetHostByName(ctx, *hostName)
+	host, err := a.GetHostByName(ctx, *hostName)
 	if err != nil {
 		return err
 	}
@@ -282,7 +281,7 @@ func serverAdd(ctx context.Context, st *store.Store, args []string) error {
 			ClientMTU:  vpn.WireGuardDefaultClientMTU,
 		},
 	}
-	serv, err = st.CreateServer(ctx, serv)
+	serv, err = a.CreateServer(ctx, serv)
 	if err != nil {
 		return err
 	}
@@ -290,7 +289,7 @@ func serverAdd(ctx context.Context, st *store.Store, args []string) error {
 	return nil
 }
 
-func serverConf(ctx context.Context, st *store.Store, args []string) error {
+func serverConf(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("server conf", flag.ContinueOnError)
 	if err := parseFlags(flags, args); err != nil {
 		return err
@@ -302,22 +301,14 @@ func serverConf(ctx context.Context, st *store.Store, args []string) error {
 	if err != nil {
 		return usagef("server conf: %w", err)
 	}
-	serv, err := st.GetServer(ctx, serverID)
-	if err != nil {
-		return err
-	}
-	clients, err := st.ListClients(ctx, serverID)
-	if err != nil {
-		return err
-	}
-	conf, err := app.ServerConfig(serv, clients)
+	conf, err := a.ServerConf(ctx, serverID)
 	if err != nil {
 		return err
 	}
 	return wg.Render(os.Stdout, conf)
 }
 
-func serverApply(ctx context.Context, st *store.Store, args []string) error {
+func serverApply(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("server apply", flag.ContinueOnError)
 	if err := parseFlags(flags, args); err != nil {
 		return err
@@ -329,16 +320,16 @@ func serverApply(ctx context.Context, st *store.Store, args []string) error {
 	if err != nil {
 		return usagef("server apply: %w", err)
 	}
-	return applyServer(ctx, st, serverID)
+	return applyServer(ctx, a, serverID)
 }
 
-func applyServer(ctx context.Context, st *store.Store, serverID int64) error {
+func applyServer(ctx context.Context, a *app.App, serverID int64) error {
 	auth, agentConn, err := remote.AgentAuth()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = agentConn.Close() }()
-	action, err := app.NewAuth(st, auth).ApplyServer(ctx, serverID)
+	action, err := a.WithAuth(auth).ApplyServer(ctx, serverID)
 	if err != nil {
 		return err
 	}
@@ -346,7 +337,7 @@ func applyServer(ctx context.Context, st *store.Store, serverID int64) error {
 	return nil
 }
 
-func clientList(ctx context.Context, st *store.Store, args []string) error {
+func clientList(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("client list", flag.ContinueOnError)
 	serverID := flags.Int64("server-id", 0, "server ID, see server add")
 	if err := parseFlags(flags, args); err != nil {
@@ -356,7 +347,7 @@ func clientList(ctx context.Context, st *store.Store, args []string) error {
 		flags.Usage()
 		return usagef("client list: -server-id (positive) is required")
 	}
-	clients, err := st.ListClients(ctx, *serverID)
+	clients, err := a.ListClients(ctx, *serverID)
 	if err != nil {
 		return err
 	}
@@ -371,7 +362,7 @@ func clientList(ctx context.Context, st *store.Store, args []string) error {
 	return w.Flush()
 }
 
-func clientAdd(ctx context.Context, st *store.Store, a *app.App, args []string) error {
+func clientAdd(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("client add", flag.ContinueOnError)
 	serverID := flags.Int64("server-id", 0, "server ID, see server add")
 	name := flags.String("name", "", "client name, unique on the server")
@@ -386,7 +377,7 @@ func clientAdd(ctx context.Context, st *store.Store, a *app.App, args []string) 
 	}
 	var tunnel []netip.Prefix
 	if *split {
-		serv, err := st.GetServer(ctx, *serverID)
+		serv, err := a.GetServer(ctx, *serverID)
 		if err != nil {
 			return err
 		}
@@ -408,13 +399,13 @@ func clientAdd(ctx context.Context, st *store.Store, a *app.App, args []string) 
 	if !*apply {
 		return nil
 	}
-	if err := applyServer(ctx, st, *serverID); err != nil {
+	if err := applyServer(ctx, a, *serverID); err != nil {
 		return fmt.Errorf("client %q is created, but not applied: %w", c.Name, err)
 	}
 	return nil
 }
 
-func clientRemove(ctx context.Context, st *store.Store, args []string) error {
+func clientRemove(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("client remove", flag.ContinueOnError)
 	serverID := flags.Int64("server-id", 0, "server ID, see server add")
 	name := flags.String("name", "", "client name, unique on the server")
@@ -426,11 +417,11 @@ func clientRemove(ctx context.Context, st *store.Store, args []string) error {
 		flags.Usage()
 		return usagef("client remove: -server-id (positive) and -name are required")
 	}
-	client, err := st.GetClientByName(ctx, *serverID, *name)
+	client, err := a.GetClientByName(ctx, *serverID, *name)
 	if err != nil {
 		return err
 	}
-	if err := st.DeleteClient(ctx, client.ID); err != nil {
+	if err := a.DeleteClient(ctx, client.ID); err != nil {
 		return err
 	}
 	if !*apply {
@@ -438,13 +429,13 @@ func clientRemove(ctx context.Context, st *store.Store, args []string) error {
 		return nil
 	}
 	fmt.Printf("client %q is removed\n", *name)
-	if err := applyServer(ctx, st, *serverID); err != nil {
+	if err := applyServer(ctx, a, *serverID); err != nil {
 		return fmt.Errorf("client %q is removed, but not applied: %w", *name, err)
 	}
 	return nil
 }
 
-func setClientEnabled(ctx context.Context, st *store.Store, args []string, enabled bool) error {
+func setClientEnabled(ctx context.Context, a *app.App, args []string, enabled bool) error {
 	cmd, done, access := "client disable", "disabled", "revoke"
 	if enabled {
 		cmd, done, access = "client enable", "enabled", "restore"
@@ -460,11 +451,11 @@ func setClientEnabled(ctx context.Context, st *store.Store, args []string, enabl
 		flags.Usage()
 		return usagef("%s: -server-id (positive) and -name are required", cmd)
 	}
-	client, err := st.GetClientByName(ctx, *serverID, *name)
+	client, err := a.GetClientByName(ctx, *serverID, *name)
 	if err != nil {
 		return err
 	}
-	if err := st.SetClientEnabled(ctx, client.ID, enabled); err != nil {
+	if err := a.SetClientEnabled(ctx, client.ID, enabled); err != nil {
 		return err
 	}
 	if !*apply {
@@ -472,13 +463,13 @@ func setClientEnabled(ctx context.Context, st *store.Store, args []string, enabl
 		return nil
 	}
 	fmt.Printf("client %q is %s\n", *name, done)
-	if err := applyServer(ctx, st, *serverID); err != nil {
+	if err := applyServer(ctx, a, *serverID); err != nil {
 		return fmt.Errorf("client %q is %s, but not applied: %w", *name, done, err)
 	}
 	return nil
 }
 
-func clientConf(ctx context.Context, st *store.Store, args []string) error {
+func clientConf(ctx context.Context, a *app.App, args []string) error {
 	flags := flag.NewFlagSet("client conf", flag.ContinueOnError)
 	if err := parseFlags(flags, args); err != nil {
 		return err
@@ -491,19 +482,11 @@ func clientConf(ctx context.Context, st *store.Store, args []string) error {
 		return usagef("client conf: %w", err)
 	}
 	name := flags.Arg(1)
-	serv, err := st.GetServer(ctx, serverID)
+	client, err := a.GetClientByName(ctx, serverID, name)
 	if err != nil {
 		return err
 	}
-	clients, err := st.ListClients(ctx, serverID)
-	if err != nil {
-		return err
-	}
-	i := slices.IndexFunc(clients, func(c vpn.Client) bool { return c.Name == name })
-	if i < 0 {
-		return fmt.Errorf("client conf: no client %q on server %d", name, serverID)
-	}
-	conf, err := app.ClientConfig(serv, clients[i])
+	conf, err := a.ClientConf(ctx, client.ID)
 	if err != nil {
 		return err
 	}

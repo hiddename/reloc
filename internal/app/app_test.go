@@ -430,3 +430,49 @@ func TestCreateClientInvalid(t *testing.T) {
 		t.Errorf("created %d clients", len(clients))
 	}
 }
+
+func TestServerConf(t *testing.T) {
+	e := newTestEnv(t)
+	srv := e.server(t, "10.66.66.1/24", "")
+	ctx := context.Background()
+
+	on := e.createClient(t, srv.ID, "on")
+	off := e.createClient(t, srv.ID, "off")
+	if err := e.app.SetClientEnabled(ctx, off.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	conf, err := e.app.ServerConf(ctx, srv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conf.Peers) != 1 {
+		t.Fatalf("peers = %d, want only the enabled client", len(conf.Peers))
+	}
+	want := netip.PrefixFrom(on.IPv4, 32)
+	if !slices.Contains(conf.Peers[0].AllowedIPs, want) {
+		t.Errorf("AllowedIPs = %v, want %v", conf.Peers[0].AllowedIPs, want)
+	}
+}
+
+func TestServerConfNotFound(t *testing.T) {
+	e := newTestEnv(t)
+	_, err := e.app.ServerConf(context.Background(), -1)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("err = %v, want store.ErrNotFound", err)
+	}
+}
+
+func TestWithAuth(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	withAuth := e.app.WithAuth(ssh.Password("unused"))
+
+	// a missing server stops the apply right after the auth check
+	if _, err := withAuth.ApplyServer(ctx, -1); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("with auth: err = %v, want store.ErrNotFound", err)
+	}
+	if _, err := e.app.ApplyServer(ctx, -1); !errors.Is(err, ErrNoAuth) {
+		t.Errorf("original App: err = %v, want ErrNoAuth", err)
+	}
+}
