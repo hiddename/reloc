@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -26,22 +25,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const usage = `Usage:
-  reloc migrate
-  reloc host add       -name -ssh -host-key
-  reloc host check     -name
-  reloc server add     -host -endpoint -ipv4 [-ipv6 -port -iface -egress -dns -dns-search]
-  reloc server conf    <server-id>
-  reloc server apply   <server-id>
-  reloc client list    -server-id
-  reloc client add     -server-id -name [-split -apply]
-  reloc client remove  -server-id -name [-apply]
-  reloc client disable -server-id -name [-apply]
-  reloc client enable  -server-id -name [-apply]
-  reloc client conf    <server-id> <name>
-
-Run "reloc <command> -h" for flags.`
-
 type usageError struct{ err error }
 
 func (e usageError) Error() string { return e.err.Error() }
@@ -51,7 +34,7 @@ func usagef(format string, a ...any) error {
 	return usageError{fmt.Errorf(format, a...)}
 }
 
-var errUsage = usageError{errors.New(usage)}
+var errUsage = usageError{errors.New("usage requested")}
 var errShown = errors.New("error already shown")
 
 func version() string {
@@ -60,6 +43,30 @@ func version() string {
 		return "dev"
 	}
 	return info.Main.Version
+}
+
+func serverIDFlag(flags *flag.FlagSet) *int64 {
+	return flags.Int64("server-id", 0, "server ID, see server add")
+}
+
+func clientFlags(flags *flag.FlagSet) (serverID *int64, name *string) {
+	return serverIDFlag(flags), flags.String("name", "", "client name, unique on the server")
+}
+
+func requireServerID(flags *flag.FlagSet, serverID int64) error {
+	if serverID <= 0 {
+		flags.Usage()
+		return usagef("%s: -server-id (positive) is required", flags.Name())
+	}
+	return nil
+}
+
+func requireClient(flags *flag.FlagSet, serverID int64, name string) error {
+	if serverID <= 0 || name == "" {
+		flags.Usage()
+		return usagef("%s: -server-id (positive) and -name are required", flags.Name())
+	}
+	return nil
 }
 
 func main() {
@@ -73,7 +80,7 @@ func main() {
 			os.Exit(2)
 		}
 		if errors.Is(err, errUsage) {
-			_, _ = fmt.Fprintf(os.Stderr, "reloc %s\n\n%s\n", version(), err)
+			_, _ = fmt.Fprintf(os.Stderr, "reloc %s\n\n%s\n", version(), usageText())
 		} else {
 			_, _ = fmt.Fprintln(os.Stderr, "reloc:", err)
 		}
@@ -85,56 +92,37 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
-	if len(args) < 2 && !(len(args) == 1 && args[0] == "migrate") {
+	if len(args) == 0 {
 		return errUsage
+	}
+	cmd, rest, ok := findCommand(args)
+	if !ok {
+		return usagef(
+			"unknown command %q, run \"reloc\" for the list",
+			strings.Join(args[:min(2, len(args))], " "),
+		)
 	}
 	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
-
-	a := app.New(store.New(pool))
-
-	switch cmd := strings.Join(args[:min(2, len(args))], " "); cmd {
-	case "migrate":
-		return migrate(ctx, pool)
-	case "host add":
-		return hostAdd(ctx, a, args[2:])
-	case "host check":
-		return hostCheck(ctx, a, args[2:])
-	case "server add":
-		return serverAdd(ctx, a, args[2:])
-	case "server conf":
-		return serverConf(ctx, a, args[2:])
-	case "server apply":
-		return serverApply(ctx, a, args[2:])
-	case "client list":
-		return clientList(ctx, a, args[2:])
-	case "client add":
-		return clientAdd(ctx, a, args[2:])
-	case "client remove":
-		return clientRemove(ctx, a, args[2:])
-	case "client disable":
-		return setClientEnabled(ctx, a, args[2:], false)
-	case "client enable":
-		return setClientEnabled(ctx, a, args[2:], true)
-	case "client conf":
-		return clientConf(ctx, a, args[2:])
-	default:
-		return usagef("unknown command %q, run \"reloc\" for the list", cmd)
-	}
+	return cmd.run(ctx, env{app: app.New(store.New(pool)), pool: pool}, rest)
 }
 
-func migrate(ctx context.Context, pool *pgxpool.Pool) error {
+func migrate(ctx context.Context, e env, args []string) error {
+	flags := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
 	dir, err := fs.Sub(migrations.Postgres, "postgres")
 	if err != nil {
 		return err
 	}
-	return store.Migrate(ctx, pool, dir)
+	return store.Migrate(ctx, e.pool, dir)
 }
 
-func hostAdd(ctx context.Context, a *app.App, args []string) error {
+func hostAdd(ctx context.Context, e env, args []string) error {
 	flags := flag.NewFlagSet("host add", flag.ContinueOnError)
 	name := flags.String("name", "", "host name")
 	sshAddr := flags.String("ssh", "", "user@host:port")
@@ -166,7 +154,7 @@ func hostAdd(ctx context.Context, a *app.App, args []string) error {
 			HostKey: k,
 		},
 	}
-	host, err = a.CreateHost(ctx, host)
+	host, err = e.app.CreateHost(ctx, host)
 	if err != nil {
 		return err
 	}
@@ -174,7 +162,7 @@ func hostAdd(ctx context.Context, a *app.App, args []string) error {
 	return nil
 }
 
-func hostCheck(ctx context.Context, a *app.App, args []string) error {
+func hostCheck(ctx context.Context, e env, args []string) error {
 	flags := flag.NewFlagSet("host check", flag.ContinueOnError)
 	hostName := flags.String("name", "", "host name, see host add")
 	if err := parseFlags(flags, args); err != nil {
@@ -185,7 +173,7 @@ func hostCheck(ctx context.Context, a *app.App, args []string) error {
 		return usagef("host check: -name is required")
 	}
 
-	h, err := a.GetHostByName(ctx, *hostName)
+	h, err := e.app.GetHostByName(ctx, *hostName)
 	if err != nil {
 		return err
 	}
@@ -209,7 +197,7 @@ func hostCheck(ctx context.Context, a *app.App, args []string) error {
 	return nil
 }
 
-func serverAdd(ctx context.Context, a *app.App, args []string) error {
+func serverAdd(ctx context.Context, e env, args []string) error {
 	flags := flag.NewFlagSet("server add", flag.ContinueOnError)
 	hostName := flags.String("host", "", "host name, see host add")
 	endpointStr := flags.String("endpoint", "", "public address or DNS name clients connect to")
@@ -259,7 +247,7 @@ func serverAdd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return usagef("server add: -dns-search: %w", err)
 	}
-	host, err := a.GetHostByName(ctx, *hostName)
+	host, err := e.app.GetHostByName(ctx, *hostName)
 	if err != nil {
 		return err
 	}
@@ -281,7 +269,7 @@ func serverAdd(ctx context.Context, a *app.App, args []string) error {
 			ClientMTU:  vpn.WireGuardDefaultClientMTU,
 		},
 	}
-	serv, err = a.CreateServer(ctx, serv)
+	serv, err = e.app.CreateServer(ctx, serv)
 	if err != nil {
 		return err
 	}
@@ -289,38 +277,192 @@ func serverAdd(ctx context.Context, a *app.App, args []string) error {
 	return nil
 }
 
-func serverConf(ctx context.Context, a *app.App, args []string) error {
+func serverConf(ctx context.Context, e env, args []string) error {
 	flags := flag.NewFlagSet("server conf", flag.ContinueOnError)
+	serverID := serverIDFlag(flags)
 	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
-	if flags.NArg() != 1 {
-		return usagef("server conf: want <server-id>")
+	if err := requireServerID(flags, *serverID); err != nil {
+		return err
 	}
-	serverID, err := parseServerID(flags.Arg(0))
-	if err != nil {
-		return usagef("server conf: %w", err)
-	}
-	conf, err := a.ServerConf(ctx, serverID)
+
+	conf, err := e.app.ServerConf(ctx, *serverID)
 	if err != nil {
 		return err
 	}
 	return wg.Render(os.Stdout, conf)
 }
 
-func serverApply(ctx context.Context, a *app.App, args []string) error {
+func serverApply(ctx context.Context, e env, args []string) error {
 	flags := flag.NewFlagSet("server apply", flag.ContinueOnError)
+	serverID := serverIDFlag(flags)
 	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
-	if flags.NArg() != 1 {
-		return usagef("server apply: want <server-id>")
+	if err := requireServerID(flags, *serverID); err != nil {
+		return err
 	}
-	serverID, err := parseServerID(flags.Arg(0))
+
+	return applyServer(ctx, e.app, *serverID)
+}
+
+func clientList(ctx context.Context, e env, args []string) error {
+	flags := flag.NewFlagSet("client list", flag.ContinueOnError)
+	serverID := serverIDFlag(flags)
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireServerID(flags, *serverID); err != nil {
+		return err
+	}
+
+	clients, err := e.app.ListClients(ctx, *serverID)
 	if err != nil {
-		return usagef("server apply: %w", err)
+		return err
 	}
-	return applyServer(ctx, a, serverID)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "ID\tNAME\tIPV4\tIPV6\tENABLED")
+	for _, c := range clients {
+		_, _ = fmt.Fprintf(
+			w, "%d\t%s\t%v\t%v\t%v\n",
+			c.ID, c.Name, addrOrDash(c.IPv4), addrOrDash(c.IPv6), c.Enabled,
+		)
+	}
+	return w.Flush()
+}
+
+func clientAdd(ctx context.Context, e env, args []string) error {
+	flags := flag.NewFlagSet("client add", flag.ContinueOnError)
+	serverID, name := clientFlags(flags)
+	split := flags.Bool("split", false, "route only VPN networks through the tunnel (default: all traffic)")
+	apply := flags.Bool("apply", false, "apply the config on the server right away")
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireClient(flags, *serverID, *name); err != nil {
+		return err
+	}
+
+	var tunnel []netip.Prefix
+	if *split {
+		serv, err := e.app.GetServer(ctx, *serverID)
+		if err != nil {
+			return err
+		}
+		if serv.IPv4 != nil {
+			tunnel = append(tunnel, serv.IPv4.Prefix)
+		}
+		if serv.IPv6 != nil {
+			tunnel = append(tunnel, serv.IPv6.Prefix)
+		}
+	}
+	c, err := e.app.CreateClient(ctx, *serverID, *name, tunnel)
+	if err != nil {
+		if errors.Is(err, store.ErrClientNameTaken) {
+			return fmt.Errorf("client %q already exists on server %d", *name, *serverID)
+		}
+		return err
+	}
+	fmt.Printf("client %d %s %v %v\n", c.ID, c.Name, addrOrDash(c.IPv4), addrOrDash(c.IPv6))
+	if !*apply {
+		return nil
+	}
+	if err := applyServer(ctx, e.app, *serverID); err != nil {
+		return fmt.Errorf("client %q is created, but not applied: %w", c.Name, err)
+	}
+	return nil
+}
+
+func clientRemove(ctx context.Context, e env, args []string) error {
+	flags := flag.NewFlagSet("client remove", flag.ContinueOnError)
+	serverID, name := clientFlags(flags)
+	apply := flags.Bool("apply", false, "apply the config on the server right away")
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireClient(flags, *serverID, *name); err != nil {
+		return err
+	}
+
+	client, err := e.app.GetClientByName(ctx, *serverID, *name)
+	if err != nil {
+		return err
+	}
+	if err := e.app.DeleteClient(ctx, client.ID); err != nil {
+		return err
+	}
+	if !*apply {
+		fmt.Printf("client %q is removed; run \"reloc server apply -server-id %d\" to revoke access\n", *name, *serverID)
+		return nil
+	}
+	fmt.Printf("client %q is removed\n", *name)
+	if err := applyServer(ctx, e.app, *serverID); err != nil {
+		return fmt.Errorf("client %q is removed, but not applied: %w", *name, err)
+	}
+	return nil
+}
+
+func clientDisable(ctx context.Context, e env, args []string) error {
+	return setClientEnabled(ctx, e, "client disable", args, false)
+}
+
+func clientEnable(ctx context.Context, e env, args []string) error {
+	return setClientEnabled(ctx, e, "client enable", args, true)
+}
+
+func setClientEnabled(ctx context.Context, e env, cmd string, args []string, enabled bool) error {
+	done, access := "disabled", "revoke"
+	if enabled {
+		done, access = "enabled", "restore"
+	}
+	flags := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	serverID, name := clientFlags(flags)
+	apply := flags.Bool("apply", false, "apply the config on the server right away")
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireClient(flags, *serverID, *name); err != nil {
+		return err
+	}
+
+	client, err := e.app.GetClientByName(ctx, *serverID, *name)
+	if err != nil {
+		return err
+	}
+	if err := e.app.SetClientEnabled(ctx, client.ID, enabled); err != nil {
+		return err
+	}
+	if !*apply {
+		fmt.Printf("client %q is %s; run \"reloc server apply -server-id %d\" to %s access\n", *name, done, *serverID, access)
+		return nil
+	}
+	fmt.Printf("client %q is %s\n", *name, done)
+	if err := applyServer(ctx, e.app, *serverID); err != nil {
+		return fmt.Errorf("client %q is %s, but not applied: %w", *name, done, err)
+	}
+	return nil
+}
+
+func clientConf(ctx context.Context, e env, args []string) error {
+	flags := flag.NewFlagSet("client conf", flag.ContinueOnError)
+	serverID, name := clientFlags(flags)
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireClient(flags, *serverID, *name); err != nil {
+		return err
+	}
+
+	client, err := e.app.GetClientByName(ctx, *serverID, *name)
+	if err != nil {
+		return err
+	}
+	conf, err := e.app.ClientConf(ctx, client.ID)
+	if err != nil {
+		return err
+	}
+	return wg.Render(os.Stdout, conf)
 }
 
 func applyServer(ctx context.Context, a *app.App, serverID int64) error {
@@ -337,167 +479,17 @@ func applyServer(ctx context.Context, a *app.App, serverID int64) error {
 	return nil
 }
 
-func clientList(ctx context.Context, a *app.App, args []string) error {
-	flags := flag.NewFlagSet("client list", flag.ContinueOnError)
-	serverID := flags.Int64("server-id", 0, "server ID, see server add")
-	if err := parseFlags(flags, args); err != nil {
-		return err
-	}
-	if *serverID <= 0 {
-		flags.Usage()
-		return usagef("client list: -server-id (positive) is required")
-	}
-	clients, err := a.ListClients(ctx, *serverID)
-	if err != nil {
-		return err
-	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tNAME\tIPV4\tIPV6\tENABLED")
-	for _, c := range clients {
-		_, _ = fmt.Fprintf(
-			w, "%d\t%s\t%v\t%v\t%v\n",
-			c.ID, c.Name, addrOrDash(c.IPv4), addrOrDash(c.IPv6), c.Enabled,
-		)
-	}
-	return w.Flush()
-}
-
-func clientAdd(ctx context.Context, a *app.App, args []string) error {
-	flags := flag.NewFlagSet("client add", flag.ContinueOnError)
-	serverID := flags.Int64("server-id", 0, "server ID, see server add")
-	name := flags.String("name", "", "client name, unique on the server")
-	split := flags.Bool("split", false, "route only VPN networks through the tunnel (default: all traffic)")
-	apply := flags.Bool("apply", false, "apply the config on the server right away")
-	if err := parseFlags(flags, args); err != nil {
-		return err
-	}
-	if *serverID <= 0 || *name == "" {
-		flags.Usage()
-		return usagef("client add: -server-id (positive) and -name are required")
-	}
-	var tunnel []netip.Prefix
-	if *split {
-		serv, err := a.GetServer(ctx, *serverID)
-		if err != nil {
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
 			return err
 		}
-		if serv.IPv4 != nil {
-			tunnel = append(tunnel, serv.IPv4.Prefix)
-		}
-		if serv.IPv6 != nil {
-			tunnel = append(tunnel, serv.IPv6.Prefix)
-		}
+		return errShown
 	}
-	c, err := a.CreateClient(ctx, *serverID, *name, tunnel)
-	if err != nil {
-		if errors.Is(err, store.ErrClientNameTaken) {
-			return fmt.Errorf("client %q already exists on server %d", *name, *serverID)
-		}
-		return err
-	}
-	fmt.Printf("client %d %s %v %v\n", c.ID, c.Name, addrOrDash(c.IPv4), addrOrDash(c.IPv6))
-	if !*apply {
-		return nil
-	}
-	if err := applyServer(ctx, a, *serverID); err != nil {
-		return fmt.Errorf("client %q is created, but not applied: %w", c.Name, err)
+	if fs.NArg() > 0 {
+		return usagef("%s: unexpected argument %q", fs.Name(), fs.Arg(0))
 	}
 	return nil
-}
-
-func clientRemove(ctx context.Context, a *app.App, args []string) error {
-	flags := flag.NewFlagSet("client remove", flag.ContinueOnError)
-	serverID := flags.Int64("server-id", 0, "server ID, see server add")
-	name := flags.String("name", "", "client name, unique on the server")
-	apply := flags.Bool("apply", false, "apply the config on the server right away")
-	if err := parseFlags(flags, args); err != nil {
-		return err
-	}
-	if *serverID <= 0 || *name == "" {
-		flags.Usage()
-		return usagef("client remove: -server-id (positive) and -name are required")
-	}
-	client, err := a.GetClientByName(ctx, *serverID, *name)
-	if err != nil {
-		return err
-	}
-	if err := a.DeleteClient(ctx, client.ID); err != nil {
-		return err
-	}
-	if !*apply {
-		fmt.Printf("client %q is removed; run \"reloc server apply %d\" to revoke access\n", *name, *serverID)
-		return nil
-	}
-	fmt.Printf("client %q is removed\n", *name)
-	if err := applyServer(ctx, a, *serverID); err != nil {
-		return fmt.Errorf("client %q is removed, but not applied: %w", *name, err)
-	}
-	return nil
-}
-
-func setClientEnabled(ctx context.Context, a *app.App, args []string, enabled bool) error {
-	cmd, done, access := "client disable", "disabled", "revoke"
-	if enabled {
-		cmd, done, access = "client enable", "enabled", "restore"
-	}
-	flags := flag.NewFlagSet(cmd, flag.ContinueOnError)
-	serverID := flags.Int64("server-id", 0, "server ID, see server add")
-	name := flags.String("name", "", "client name, unique on the server")
-	apply := flags.Bool("apply", false, "apply the config on the server right away")
-	if err := parseFlags(flags, args); err != nil {
-		return err
-	}
-	if *serverID <= 0 || *name == "" {
-		flags.Usage()
-		return usagef("%s: -server-id (positive) and -name are required", cmd)
-	}
-	client, err := a.GetClientByName(ctx, *serverID, *name)
-	if err != nil {
-		return err
-	}
-	if err := a.SetClientEnabled(ctx, client.ID, enabled); err != nil {
-		return err
-	}
-	if !*apply {
-		fmt.Printf("client %q is %s; run \"reloc server apply %d\" to %s access\n", *name, done, *serverID, access)
-		return nil
-	}
-	fmt.Printf("client %q is %s\n", *name, done)
-	if err := applyServer(ctx, a, *serverID); err != nil {
-		return fmt.Errorf("client %q is %s, but not applied: %w", *name, done, err)
-	}
-	return nil
-}
-
-func clientConf(ctx context.Context, a *app.App, args []string) error {
-	flags := flag.NewFlagSet("client conf", flag.ContinueOnError)
-	if err := parseFlags(flags, args); err != nil {
-		return err
-	}
-	if flags.NArg() != 2 {
-		return usagef("client conf: want <server-id> <name>")
-	}
-	serverID, err := parseServerID(flags.Arg(0))
-	if err != nil {
-		return usagef("client conf: %w", err)
-	}
-	name := flags.Arg(1)
-	client, err := a.GetClientByName(ctx, serverID, name)
-	if err != nil {
-		return err
-	}
-	conf, err := a.ClientConf(ctx, client.ID)
-	if err != nil {
-		return err
-	}
-	return wg.Render(os.Stdout, conf)
-}
-
-func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err == nil || errors.Is(err, flag.ErrHelp) {
-		return err
-	}
-	return errShown
 }
 
 func parseList[T any](s string, parse func(string) (T, error)) ([]T, error) {
@@ -513,14 +505,6 @@ func parseList[T any](s string, parse func(string) (T, error)) ([]T, error) {
 		out = append(out, v)
 	}
 	return out, nil
-}
-
-func parseServerID(s string) (int64, error) {
-	id, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("server id %q: want a positive number", s)
-	}
-	return id, nil
 }
 
 func addrOrDash(a netip.Addr) string {
