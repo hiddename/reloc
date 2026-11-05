@@ -697,7 +697,7 @@ func TestApplyServerNoKey(t *testing.T) {
 
 func TestApplyServerNotFound(t *testing.T) {
 	e := newTestEnv(t)
-	e.handler = New(app.NewAuth(e.st, ssh.Password("unused")), testToken)
+	e.handler = New(app.New(e.st).WithAuth(ssh.Password("unused")), testToken)
 
 	w := e.do(http.MethodPost, applyPath(fmt.Sprint(int64(1<<62))), "")
 	wantError(t, w, http.StatusNotFound, "not found")

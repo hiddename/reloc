@@ -99,5 +99,5 @@ func newApp(st *store.Store) (*app.App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return app.NewAuth(st, auth), nil
+	return app.New(st).WithAuth(auth), nil
 }

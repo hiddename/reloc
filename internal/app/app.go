@@ -31,8 +31,10 @@ func New(s *store.Store) *App {
 	return &App{store: s}
 }
 
-func NewAuth(s *store.Store, auth ssh.AuthMethod) *App {
-	return &App{store: s, auth: auth}
+// WithAuth returns an App that connects to hosts using auth. The new App has
+// its own apply locks, so call it once, not per request.
+func (a *App) WithAuth(auth ssh.AuthMethod) *App {
+	return &App{store: a.store, auth: auth}
 }
 
 func (a *App) CreateClient(ctx context.Context, serverID int64, name string, tunnel []netip.Prefix) (vpn.Client, error) {
@@ -402,4 +404,48 @@ func (l *serverLocks) lock(ctx context.Context, id int64) (unlock func(), err er
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func (a *App) CreateHost(ctx context.Context, h vpn.Host) (vpn.Host, error) {
+	h, err := a.store.CreateHost(ctx, h)
+	if err != nil {
+		return vpn.Host{}, fmt.Errorf("app: create host: %w", err)
+	}
+	return h, nil
+}
+
+func (a *App) GetHostByName(ctx context.Context, name string) (vpn.Host, error) {
+	h, err := a.store.GetHostByName(ctx, name)
+	if err != nil {
+		return vpn.Host{}, fmt.Errorf("app: get host by name: %w", err)
+	}
+	return h, nil
+}
+
+func (a *App) CreateServer(ctx context.Context, serv vpn.Server) (vpn.Server, error) {
+	serv, err := a.store.CreateServer(ctx, serv)
+	if err != nil {
+		return vpn.Server{}, fmt.Errorf("app: create server: %w", err)
+	}
+	return serv, nil
+}
+
+func (a *App) ServerConf(ctx context.Context, id int64) (wg.Config, error) {
+	conf, err := a.serverConf(ctx, id)
+	if err != nil {
+		return wg.Config{}, fmt.Errorf("app: server conf: %w", err)
+	}
+	return conf, nil
+}
+
+func (a *App) serverConf(ctx context.Context, id int64) (wg.Config, error) {
+	serv, err := a.store.GetServer(ctx, id)
+	if err != nil {
+		return wg.Config{}, err
+	}
+	clients, err := a.store.ListClients(ctx, id)
+	if err != nil {
+		return wg.Config{}, err
+	}
+	return ServerConfig(serv, clients)
 }
