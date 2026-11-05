@@ -1,5 +1,6 @@
 .idea/
 /reloc
+/relocd
 .envrc
 *.conf
 !internal/*/testdata/*.conf
