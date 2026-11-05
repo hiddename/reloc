@@ -661,6 +661,48 @@ func TestClientConf(t *testing.T) {
 	}
 }
 
+func applyPath(serverID string) string {
+	return "/api/v1/servers/" + serverID + "/apply"
+}
+
+func TestApplyServerBadID(t *testing.T) {
+	h := New(nil, testToken)
+	for _, id := range []string{"abc", "0", "-1", "1.5", "99999999999999999999"} {
+		t.Run(id, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, applyPath(id), nil)
+			r.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			wantError(t, w, http.StatusBadRequest, "server id must be a positive number")
+		})
+	}
+}
+
+func TestApplyServerRequiresToken(t *testing.T) {
+	h := New(nil, testToken)
+	r := httptest.NewRequest(http.MethodPost, applyPath("1"), nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	wantError(t, w, http.StatusUnauthorized, "unauthorized")
+}
+
+func TestApplyServerNoKey(t *testing.T) {
+	h := New(app.New(nil), testToken)
+	r := httptest.NewRequest(http.MethodPost, applyPath("1"), nil)
+	r.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	wantError(t, w, http.StatusServiceUnavailable, "ssh key is not configured")
+}
+
+func TestApplyServerNotFound(t *testing.T) {
+	e := newTestEnv(t)
+	e.handler = New(app.NewAuth(e.st, ssh.Password("unused")), testToken)
+
+	w := e.do(http.MethodPost, applyPath(fmt.Sprint(int64(1<<62))), "")
+	wantError(t, w, http.StatusNotFound, "not found")
+}
+
 func TestCreateClient(t *testing.T) {
 	e := newTestEnv(t)
 	srv := e.server(t, "10.66.66.1/24", "")

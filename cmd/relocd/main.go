@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/uhiddename/reloc/internal/api"
 	"github.com/uhiddename/reloc/internal/app"
+	"github.com/uhiddename/reloc/internal/remote"
 	"github.com/uhiddename/reloc/internal/store"
 )
 
@@ -56,9 +57,14 @@ func run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
+	a, err := newApp(store.New(pool))
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(app.New(store.New(pool)), token),
+		Handler:           api.New(a, token),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
@@ -81,4 +87,17 @@ func run(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+func newApp(st *store.Store) (*app.App, error) {
+	path := os.Getenv("RELOCD_SSH_KEY")
+	if path == "" {
+		slog.Warn("RELOCD_SSH_KEY is not set, applying configs is disabled")
+		return app.New(st), nil
+	}
+	auth, err := remote.KeyFileAuth(path)
+	if err != nil {
+		return nil, err
+	}
+	return app.NewAuth(st, auth), nil
 }
