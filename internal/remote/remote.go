@@ -124,3 +124,28 @@ func hostKeyAlgorithms(k ssh.PublicKey) []string {
 	}
 	return []string{k.Type()}
 }
+
+// KeyFileAuth loads an unencrypted private key from a file.
+// Like ssh, it refuses a key that other users can read.
+func KeyFileAuth(path string) (ssh.AuthMethod, error) {
+	signer, err := readKeyFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("remote: ssh key %s: %w", path, err)
+	}
+	return ssh.PublicKeys(signer), nil
+}
+
+func readKeyFile(path string) (ssh.Signer, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return nil, fmt.Errorf("permissions %o are too open, want 600", perm)
+	}
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ssh.ParsePrivateKey(key)
+}

@@ -3,6 +3,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -19,8 +20,12 @@ import (
 	"github.com/uhiddename/reloc/internal/wg"
 )
 
-// maxRequestBody limits the size of a request body.
-const maxRequestBody = 1 << 20 // 1 MiB
+const (
+	// maxRequestBody limits the size of a request body.
+	maxRequestBody = 1 << 20 // 1 MiB
+	// applyTimeout also limits how long a hung host can hold the server's lock.
+	applyTimeout = time.Minute
+)
 
 // New returns the API handler. Every request must carry the token as
 // "Authorization: Bearer <token>". It panics on an empty token: the header
@@ -35,7 +40,7 @@ func New(a *app.App, token string) http.Handler {
 
 	mux.HandleFunc("GET /api/v1/servers/{id}/clients", s.listClients)
 	mux.HandleFunc("POST /api/v1/servers/{id}/clients", s.createClient)
-	//mux.HandleFunc("POST /api/v1/servers/{id}/apply", s.applyServer)
+	mux.HandleFunc("POST /api/v1/servers/{id}/apply", s.applyServer)
 
 	mux.HandleFunc("PATCH /api/v1/clients/{id}", s.updateClient)
 	mux.HandleFunc("DELETE /api/v1/clients/{id}", s.deleteClient)
@@ -89,6 +94,26 @@ func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, newClientResponse(client))
+}
+
+type applyResponse struct {
+	Action string `json:"action"`
+}
+
+func (s *server) applyServer(w http.ResponseWriter, r *http.Request) {
+	serverID, err := pathID(r, "server")
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), applyTimeout)
+	defer cancel()
+	action, err := s.app.ApplyServer(ctx, serverID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, applyResponse{Action: action.String()})
 }
 
 type updateClientRequest struct {
@@ -288,6 +313,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		writeJSON(w, http.StatusConflict, errorResponse{"client name is already taken"})
 	case errors.Is(err, app.ErrNetworkFull):
 		writeJSON(w, http.StatusConflict, errorResponse{"network is full"})
+	case errors.Is(err, app.ErrNoAuth):
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"ssh key is not configured"})
 	default:
 		slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"internal error"})

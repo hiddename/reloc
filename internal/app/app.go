@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/netip"
 	"strings"
+	"sync"
 
 	"github.com/uhiddename/reloc/internal/remote"
 	"github.com/uhiddename/reloc/internal/store"
@@ -16,9 +17,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+const createClientAttempts = 10
+
+var ErrNoAuth = errors.New("ssh key is not configured")
+
 type App struct {
-	store *store.Store
-	auth  ssh.AuthMethod
+	store      *store.Store
+	auth       ssh.AuthMethod
+	applyLocks serverLocks
 }
 
 func New(s *store.Store) *App {
@@ -28,8 +34,6 @@ func New(s *store.Store) *App {
 func NewAuth(s *store.Store, auth ssh.AuthMethod) *App {
 	return &App{store: s, auth: auth}
 }
-
-const createClientAttempts = 10
 
 func (a *App) CreateClient(ctx context.Context, serverID int64, name string, tunnel []netip.Prefix) (vpn.Client, error) {
 	c, err := a.createClient(ctx, serverID, name, tunnel)
@@ -235,6 +239,16 @@ func (a *App) ApplyServer(ctx context.Context, serverID int64) (ApplyAction, err
 }
 
 func (a *App) applyServer(ctx context.Context, serverID int64) (ApplyAction, error) {
+	if a.auth == nil {
+		return ApplyUnchanged, ErrNoAuth
+	}
+	unlock, err := a.applyLocks.lock(ctx, serverID)
+	if err != nil {
+		return ApplyUnchanged, err
+	}
+	defer unlock()
+	// read after taking the lock: a waiting apply must see the changes made
+	// while it waited, or it would overwrite a newer config with an older one
 	serv, err := a.store.GetServer(ctx, serverID)
 	if err != nil {
 		return ApplyUnchanged, err
@@ -361,4 +375,31 @@ func confPath(iface string) string {
 func confInterfaceSection(conf []byte) []byte {
 	before, _, _ := bytes.Cut(conf, []byte("\n[Peer]"))
 	return bytes.TrimSpace(before)
+}
+
+// serverLocks serializes applies per server. A lock is a channel, not a
+// sync.Mutex, so that waiting for it stops when ctx is canceled.
+type serverLocks struct {
+	mu    sync.Mutex
+	locks map[int64]chan struct{}
+}
+
+func (l *serverLocks) lock(ctx context.Context, id int64) (unlock func(), err error) {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = make(map[int64]chan struct{})
+	}
+	ch, ok := l.locks[id]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		l.locks[id] = ch
+	}
+	l.mu.Unlock()
+
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
