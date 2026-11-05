@@ -391,3 +391,42 @@ func TestCreateClientConcurrentNetworkFull(t *testing.T) {
 		t.Errorf("created %d clients, want 5", created)
 	}
 }
+
+func TestCreateClientInvalid(t *testing.T) {
+	e := newTestEnv(t)
+	srv := e.server(t, "10.66.66.1/24", "")
+	ctx := context.Background()
+
+	tests := []struct {
+		name   string
+		client string
+		tunnel []netip.Prefix
+	}{
+		{"bad name", "with space", nil},
+		{"empty name", "", nil},
+		{"host bits in a tunnel network", "c", []netip.Prefix{netip.MustParsePrefix("10.66.66.5/24")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := e.app.CreateClient(ctx, srv.ID, tt.client, tt.tunnel)
+			var invalid *vpn.ValidationError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("CreateClient() = %+v, %v; want *vpn.ValidationError", c, err)
+			}
+		})
+	}
+	// validation goes first: an unknown server is not even looked up
+	_, err := e.app.CreateClient(ctx, -1, "with space", nil)
+	var invalid *vpn.ValidationError
+	if !errors.As(err, &invalid) {
+		t.Errorf("unknown server and bad name: err = %v, want *vpn.ValidationError", err)
+	}
+
+	clients, err := e.st.ListClients(ctx, srv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clients) != 0 {
+		t.Errorf("created %d clients", len(clients))
+	}
+}

@@ -14,37 +14,33 @@ import (
 )
 
 const (
-	insertVPNClientSQL = `
+	insertVPNClientsSQL = `
 insert into vpn_clients (server_id, protocol, name, ipv4_address, ipv6_address, tunnel_networks, enabled)
 values (@server_id, @protocol, @name, @ipv4_address, @ipv6_address, @tunnel_networks, @enabled)
 returning id, created_at
 `
-	insertWGClientSQL = `
+	insertWGClientsSQL = `
 insert into wg_clients (client_id, server_id, private_key, public_key, preshared_key, persistent_keepalive)
 values (@client_id, @server_id, @private_key, @public_key, @preshared_key, @persistent_keepalive)
 `
-	selectClientsSQL = `
-select
-        c.id, c.server_id, c.protocol, c.name, c.ipv4_address, c.ipv6_address,
-        c.tunnel_networks, c.enabled, c.created_at,
-        wgc.private_key as wgc_private_key,
-        wgc.preshared_key as wgc_preshared_key,
-        wgc.persistent_keepalive as wgc_persistent_keepalive
-from vpn_clients c
-join wg_clients wgc on wgc.client_id = c.id
-where c.server_id = @server_id
-order by c.id
+	deleteVPNClientsSQL = `
+delete from vpn_clients
+where id = @id
 `
-	deleteVPNClientSQL = `
-delete from vpn_clients c
-where c.server_id = @server_id
-  and c.name = @name
-`
-	setVPNClientEnabledSQL = `
+	updateVPNClientsEnabledSQL = `
 update vpn_clients
 set enabled = @enabled
-where server_id = @server_id
-  and name = @name
+where id = @id
+`
+	selectVPNClientsSQL = `
+select
+	c.id, c.server_id, c.protocol, c.name, c.ipv4_address, c.ipv6_address,
+	c.tunnel_networks, c.enabled, c.created_at,
+	wgc.private_key as wgc_private_key,
+	wgc.preshared_key as wgc_preshared_key,
+	wgc.persistent_keepalive as wgc_persistent_keepalive
+from vpn_clients c
+join wg_clients wgc on wgc.client_id = c.id
 `
 )
 
@@ -69,20 +65,36 @@ func (s *Store) ListClients(ctx context.Context, serverID int64) ([]vpn.Client, 
 	return clients, nil
 }
 
-func (s *Store) DeleteClient(ctx context.Context, serverID int64, name string) error {
-	err := s.deleteClient(ctx, serverID, name)
+func (s *Store) DeleteClient(ctx context.Context, clientID int64) error {
+	err := s.deleteClient(ctx, clientID)
 	if err != nil {
 		return fmt.Errorf("store: delete client: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) SetClientEnabled(ctx context.Context, serverID int64, name string, enabled bool) error {
-	err := s.setClientEnabled(ctx, serverID, name, enabled)
+func (s *Store) SetClientEnabled(ctx context.Context, clientID int64, enabled bool) error {
+	err := s.setClientEnabled(ctx, clientID, enabled)
 	if err != nil {
 		return fmt.Errorf("store: set client enabled: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) GetClientByName(ctx context.Context, serverID int64, name string) (vpn.Client, error) {
+	c, err := s.getClientByName(ctx, serverID, name)
+	if err != nil {
+		return vpn.Client{}, fmt.Errorf("store: get client by name: %w", err)
+	}
+	return c, nil
+}
+
+func (s *Store) GetClient(ctx context.Context, id int64) (vpn.Client, error) {
+	c, err := s.getClient(ctx, id)
+	if err != nil {
+		return vpn.Client{}, fmt.Errorf("store: get client by id: %w", err)
+	}
+	return c, nil
 }
 
 func (s *Store) createClient(ctx context.Context, c vpn.Client) (vpn.Client, error) {
@@ -102,7 +114,7 @@ func (s *Store) createClient(ctx context.Context, c vpn.Client) (vpn.Client, err
 		}
 		if err := tx.QueryRow(
 			ctx,
-			insertVPNClientSQL,
+			insertVPNClientsSQL,
 			args,
 		).Scan(&c.ID, &c.CreatedAt); err != nil {
 			return clientConflict(err)
@@ -119,7 +131,7 @@ func (s *Store) createClient(ctx context.Context, c vpn.Client) (vpn.Client, err
 			}
 			if _, err := tx.Exec(
 				ctx,
-				insertWGClientSQL,
+				insertWGClientsSQL,
 				args,
 			); err != nil {
 				return err
@@ -212,7 +224,12 @@ func (r clientRow) client() (vpn.Client, error) {
 }
 
 func (s *Store) listClients(ctx context.Context, serverID int64) ([]vpn.Client, error) {
-	pgRows, err := s.db.Query(ctx, selectClientsSQL, pgx.NamedArgs{"server_id": serverID})
+	pgRows, err := s.db.Query(ctx,
+		selectVPNClientsSQL+"where c.server_id = @server_id order by c.id",
+		pgx.NamedArgs{
+			"server_id": serverID,
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -223,31 +240,81 @@ func (s *Store) listClients(ctx context.Context, serverID int64) ([]vpn.Client, 
 	return mapSliceErr(rows, clientRow.client)
 }
 
-func (s *Store) deleteClient(ctx context.Context, serverID int64, name string) error {
-	tag, err := s.db.Exec(ctx, deleteVPNClientSQL, pgx.NamedArgs{
-		"server_id": serverID,
-		"name":      name,
+func (s *Store) deleteClient(ctx context.Context, clientID int64) error {
+	tag, err := s.db.Exec(ctx, deleteVPNClientsSQL, pgx.NamedArgs{
+		"id": clientID,
 	})
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("%w: client %q on server %d", ErrNotFound, name, serverID)
+		return fmt.Errorf("%w: client %d", ErrNotFound, clientID)
 	}
 	return nil
 }
 
-func (s *Store) setClientEnabled(ctx context.Context, serverID int64, name string, enabled bool) error {
-	tag, err := s.db.Exec(ctx, setVPNClientEnabledSQL, pgx.NamedArgs{
-		"enabled":   enabled,
-		"server_id": serverID,
-		"name":      name,
+func (s *Store) setClientEnabled(ctx context.Context, clientID int64, enabled bool) error {
+	tag, err := s.db.Exec(ctx, updateVPNClientsEnabledSQL, pgx.NamedArgs{
+		"id":      clientID,
+		"enabled": enabled,
 	})
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("%w: client %q on server %d", ErrNotFound, name, serverID)
+		return fmt.Errorf("%w: client %d", ErrNotFound, clientID)
 	}
 	return nil
+}
+
+func (s *Store) getClientByName(ctx context.Context, serverID int64, name string) (vpn.Client, error) {
+	c, err := s.fetchClient(ctx,
+		selectVPNClientsSQL+"where c.server_id = @server_id and c.name = @name",
+		pgx.NamedArgs{
+			"server_id": serverID,
+			"name":      name,
+		},
+	)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return vpn.Client{}, fmt.Errorf("%w: client %q on server %d", err, name, serverID)
+	case err != nil:
+		return vpn.Client{}, err
+	}
+	return c, nil
+}
+
+func (s *Store) getClient(ctx context.Context, id int64) (vpn.Client, error) {
+	c, err := s.fetchClient(ctx,
+		selectVPNClientsSQL+"where c.id = @id",
+		pgx.NamedArgs{
+			"id": id,
+		},
+	)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return vpn.Client{}, fmt.Errorf("%w: client %d", err, id)
+	case err != nil:
+		return vpn.Client{}, err
+	}
+	return c, nil
+}
+
+func (s *Store) fetchClient(ctx context.Context, sql string, args pgx.NamedArgs) (vpn.Client, error) {
+	pgRows, err := s.db.Query(ctx, sql, args)
+	if err != nil {
+		return vpn.Client{}, err
+	}
+	row, err := pgx.CollectExactlyOneRow(pgRows, pgx.RowToStructByName[clientRow])
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return vpn.Client{}, ErrNotFound
+	case err != nil:
+		return vpn.Client{}, err
+	}
+	c, err := row.client()
+	if err != nil {
+		return vpn.Client{}, err
+	}
+	return c, nil
 }
